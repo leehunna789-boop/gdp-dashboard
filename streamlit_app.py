@@ -1,151 +1,52 @@
-import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+import torch
+from transformers import pipeline
+import soundfile as sf
+from rvc_python import rvc
+import os
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# --- PART 1: สร้างเสียงร้องด้วย BARK ---
+def generate_bark_singing(lyrics, output_bark_path):
+    print("📢 กำลังสร้างเสียงร้องจาก Bark...")
+    device = 0 if torch.cuda.is_available() else -1
+    # ใช้ bark-small เพื่อความเร็ว ถ้าคอมแรงใช้ suno/bark
+    synthesizer = pipeline("text-to-speech", model="suno/bark-small", device=device)
+    
+    # เทคนิคใส่เครื่องหมายเพื่อให้ AI ร้องเพลง
+    formatted_lyrics = f"[music] ♪ {lyrics} ♪"
+    
+    generation_params = {
+        "do_sample": True,
+        "speaker_preset": "v2/en_speaker_6" 
+    }
+    
+    speech = synthesizer(formatted_lyrics, forward_params=generation_params)
+    sf.write(output_bark_path, speech["audio"], samplerate=speech["sampling_rate"])
+    print(f"✅ สร้างเสียงต้นฉบับสำเร็จ: {output_bark_path}")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
-
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+# --- PART 2: เปลี่ยนเสียงด้วย RVC ---
+def apply_rvc(input_wav, model_pth, final_output):
+    print("🎭 กำลังแปลงเสียงเป็นโมเดลของคุณด้วย RVC...")
+    rvc.convert(
+        model_path=model_pth,
+        f0_method='rmvpe', # คุณภาพดีที่สุดสำหรับเสียงร้อง
+        f0_up_key=0,       # ปรับ +12 ถ้าอยากให้เสียงสูงขึ้น (เช่น ชายไปหญิง)
+        input_path=input_wav,
+        output_path=final_output
     )
+    print(f"✨ เสร็จสมบูรณ์! ไฟล์สุดท้าย: {final_output}")
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+# --- รันขั้นตอนทั้งหมด ---
+if __name__ == "__main__":
+    lyrics = "Twinkle, twinkle, little star, how I wonder what you are"
+    temp_bark = "temp_bark_voice.wav"
+    my_model = "my_model.pth" # <--- เปลี่ยนชื่อไฟล์ให้ตรงกับที่คุณโหลดจาก Drive
+    final_result = "final_ai_cover.wav"
 
-    return gdp_df
+    # 1. สร้างเสียงร้อง
+    generate_bark_singing(lyrics, temp_bark)
 
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+    # 2. เปลี่ยนเสียงด้วย RVC
+    if os.path.exists(my_model):
+        apply_rvc(temp_bark, my_model, final_result)
+    else:
+        print(f"❌ ไม่พบไฟล์โมเดล {my_model} กรุณาเช็คชื่อไฟล์ให้ถูกต้อง")
