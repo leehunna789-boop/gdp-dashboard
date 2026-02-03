@@ -1,2 +1,7 @@
 streamlit
 pandas
+install
+transformers 
+torch 
+soundfile 
+rvc-python
